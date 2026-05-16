@@ -1,0 +1,91 @@
+Bootstrap: docker
+From: biohpc/dreg@sha256:ebcc18ebb774fa198d36f7398eb92f50b33fb368aab1d67efebedb7aceb5ba16
+
+%labels
+    Author Adam Youlin He
+    Software dREG
+    Upstream https://github.com/Danko-Lab/dREG
+    DockerImage https://hub.docker.com/r/biohpc/dreg
+    DockerDigest sha256:ebcc18ebb774fa198d36f7398eb92f50b33fb368aab1d67efebedb7aceb5ba16
+    BioHPCVersion 20200515
+    BioHPCBase "Ubuntu 20.04, R 4.0.5, CUDA 11.1"
+
+%environment
+    export DREG_HOME=/dREG
+    export PATH=/usr/local/bin:/dREG:${PATH}
+    export LC_ALL=C
+
+%post
+    cat > /usr/local/bin/dreg <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+show_help() {
+    cat <<'HELP'
+dREG Apptainer wrapper
+
+Common commands:
+  dreg run_dREG PLUS.bw MINUS.bw OUT_PREFIX MODEL.rdata [NTHREADS] [GPU]
+  dreg run_predict PLUS.bw MINUS.bw OUT_PREFIX MODEL.rdata [NTHREADS] [GPU]
+  dreg writeBed THRESHOLD OUT_PREFIX.bedGraph.gz
+
+Other commands are executed directly inside the container.
+HELP
+}
+
+if [[ $# -eq 0 || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    show_help
+    exit 0
+fi
+
+case "$1" in
+    run_dREG|run_dREG.bsh)
+        shift
+        exec bash /dREG/run_dREG.bsh "$@"
+        ;;
+    run_predict|run_predict.bsh)
+        shift
+        exec bash /dREG/run_predict.bsh "$@"
+        ;;
+    writeBed|writeBed.bsh)
+        shift
+        exec bash /dREG/writeBed.bsh "$@"
+        ;;
+    shell)
+        shift
+        exec bash "$@"
+        ;;
+    *)
+        exec "$@"
+        ;;
+esac
+EOF
+    chmod 0755 /usr/local/bin/dreg
+
+%runscript
+    exec dreg "$@"
+
+%test
+    test -f /dREG/run_dREG.bsh
+    test -f /dREG/run_predict.bsh
+    test -f /dREG/writeBed.bsh
+    command -v Rscript
+    command -v sort-bed
+    command -v tabix
+    command -v bedGraphToBigWig || command -v bedgraphtobigwig
+    Rscript -e 'pkgs <- c("dREG", "data.table", "e1071", "mvtnorm", "randomForest", "rmutil", "snowfall", "bigWig", "rphast", "Rgtsvm"); missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]; if (length(missing)) stop("Missing R packages: ", paste(missing, collapse = ", "))'
+
+%help
+    This Apptainer definition wraps the Cornell BioHPC dREG Docker image:
+    https://hub.docker.com/r/biohpc/dreg
+
+    Build:
+      apptainer build dreg.sif Apptainer.def
+
+    Run with a GPU:
+      apptainer exec --nv --bind /path/to/data:/data dreg.sif \
+        dreg run_dREG /data/plus.bw /data/minus.bw /data/out /data/model.rdata 16 0
+
+    Run legacy score prediction:
+      apptainer exec --bind /path/to/data:/data dreg.sif \
+        dreg run_predict /data/plus.bw /data/minus.bw /data/out /data/model.rdata 2

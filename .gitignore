@@ -47,3 +47,8 @@ po/*~
 
 # RStudio Connect folder
 rsconnect/
+
+# Apptainer build outputs
+*.sif
+*.simg
+apptainer-cache/
