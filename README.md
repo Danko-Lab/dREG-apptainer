@@ -14,14 +14,49 @@ BioHPC's dREG page says their Docker image was built with Ubuntu 20.04, R 4.0.5,
 
 ## Build
 
+For an unprivileged build, use Apptainer's fakeroot mode but skip the container-internal `fakeroot` helper:
+
 ```bash
-apptainer build dreg.sif dreg.def
+apptainer build --fakeroot --ignore-fakeroot-command dreg.sif dreg.def
+```
+
+This avoids a known failure mode where Apptainer injects a host `faked` binary that requires newer glibc than the Ubuntu 20.04 base image provides.
+
+If you have admin privileges on the build host, a privileged build is also fine:
+
+```bash
+sudo apptainer build dreg.sif dreg.def
 ```
 
 If your cluster uses SingularityCE, the same definition should work:
 
 ```bash
 singularity build dreg.sif dreg.def
+```
+
+### Fakeroot GLIBC Troubleshooting
+
+If the build fails during `%post` with messages like `/.singularity.d/libs/faked` and `GLIBC_2.33` or `GLIBC_2.34 not found`, rebuild with:
+
+```bash
+apptainer build --fakeroot --ignore-fakeroot-command dreg.sif dreg.def
+```
+
+That error comes from Apptainer's fakeroot helper, not from dREG itself.
+
+## Test apptainer
+
+Run the following commands to test the apptainer build.
+
+```bash
+apptainer test dreg.sif
+apptainer run dreg.sif --help
+```
+
+On GPU-capable machines, also check CUDA visibility.
+
+```bash
+apptainer exec --nv dreg.sif nvidia-smi
 ```
 
 ## Run

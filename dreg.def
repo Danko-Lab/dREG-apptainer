@@ -80,7 +80,7 @@ EOF
     https://hub.docker.com/r/biohpc/dreg
 
     Build:
-      apptainer build dreg.sif Apptainer.def
+      apptainer build --fakeroot --ignore-fakeroot-command dreg.sif dreg.def
 
     Run with a GPU:
       apptainer exec --nv --bind /path/to/data:/data dreg.sif \
