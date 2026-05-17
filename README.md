@@ -44,6 +44,21 @@ apptainer build --fakeroot --ignore-fakeroot-command dreg.sif dreg.def
 
 That error comes from Apptainer's fakeroot helper, not from dREG itself.
 
+### Host R Library Troubleshooting
+
+If R tries to load packages from your home directory, for example `/home/$USER/R/x86_64-pc-linux-gnu-library/4.0`, rebuild this image from the current `dreg.def`. The definition sets `R_LIBS_USER`, `R_PROFILE_USER`, and `R_ENVIRON_USER` so host R libraries and startup files do not override the container's pinned R stack.
+
+For an already-built SIF, use this runtime workaround:
+
+```bash
+apptainer exec --nv --cleanenv \
+  --env R_LIBS_USER=/tmp \
+  --env R_PROFILE_USER=/dev/null \
+  --env R_ENVIRON_USER=/dev/null \
+  --bind /path/to/data:/data dreg.sif \
+  dreg run_dREG /data/mysample_plus.bw /data/mysample_minus.bw /data/output_prefix /data/asvm.gdm.6.6M.20170828.rdata 16 0
+```
+
 ## Test apptainer
 
 Run the following commands to test the apptainer build.
@@ -58,6 +73,24 @@ On GPU-capable machines, also check CUDA visibility.
 ```bash
 apptainer exec --nv dreg.sif nvidia-smi
 ```
+
+If the host reports a new CUDA driver but dREG fails with `CUDA driver version is insufficient for CUDA runtime version`, check that the container is using Apptainer's bound driver libraries instead of CUDA stubs or host CUDA module libraries:
+
+```bash
+apptainer exec --nv --cleanenv dreg.sif \
+  dreg cuda_check
+```
+
+Run dREG on an idle GPU. The final argument to `run_dREG` is the GPU ID; if `nvidia-smi` shows GPU 0 is busy and GPU 1 is idle, use `1`.
+
+The `dreg` wrapper prepends `/.singularity.d/libs` to `LD_LIBRARY_PATH` when present. If the error persists, try Apptainer's NVIDIA container CLI integration if enabled on your cluster:
+
+```bash
+apptainer exec --nvccli --cleanenv --bind /path/to/data:/data dreg.sif \
+  dreg run_dREG /data/mysample_plus.bw /data/mysample_minus.bw /data/output_prefix /data/asvm.gdm.6.6M.20170828.rdata 16 1
+```
+
+Avoid loading a host CUDA toolkit module before launching the container unless your cluster requires it; dREG should use the CUDA runtime in the image and only the NVIDIA driver from the host.
 
 ## Run
 

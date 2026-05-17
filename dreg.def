@@ -13,12 +13,23 @@ From: biohpc/dreg@sha256:ebcc18ebb774fa198d36f7398eb92f50b33fb368aab1d67efebedb7
 %environment
     export DREG_HOME=/dREG
     export PATH=/usr/local/bin:/dREG:${PATH}
+    export R_LIBS_USER=/opt/dreg-r-user-library
+    export R_PROFILE_USER=/dev/null
+    export R_ENVIRON_USER=/dev/null
     export LC_ALL=C
 
 %post
+    mkdir -p /opt/dreg-r-user-library
     cat > /usr/local/bin/dreg <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+
+export R_LIBS_USER=/opt/dreg-r-user-library
+export R_PROFILE_USER=/dev/null
+export R_ENVIRON_USER=/dev/null
+if [[ -d /.singularity.d/libs ]]; then
+    export LD_LIBRARY_PATH="/.singularity.d/libs:${LD_LIBRARY_PATH:-}"
+fi
 
 show_help() {
     cat <<'HELP'
@@ -28,6 +39,7 @@ Common commands:
   dreg run_dREG PLUS.bw MINUS.bw OUT_PREFIX MODEL.rdata [NTHREADS] [GPU]
   dreg run_predict PLUS.bw MINUS.bw OUT_PREFIX MODEL.rdata [NTHREADS] [GPU]
   dreg writeBed THRESHOLD OUT_PREFIX.bedGraph.gz
+  dreg cuda_check
 
 Other commands are executed directly inside the container.
 HELP
@@ -50,6 +62,12 @@ case "$1" in
     writeBed|writeBed.bsh)
         shift
         exec bash /dREG/writeBed.bsh "$@"
+        ;;
+    cuda_check)
+        shift
+        nvidia-smi || true
+        echo "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}"
+        ldconfig -p | grep -E 'libcuda|libcudart' || true
         ;;
     shell)
         shift
