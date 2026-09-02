@@ -1,132 +1,203 @@
 # dREG-apptainer
 
-Apptainer recipe for [Danko-Lab/dREG](https://github.com/Danko-Lab/dREG), using the Cornell BioHPC Docker image [`biohpc/dreg`](https://hub.docker.com/r/biohpc/dreg) as the base.
+A prebuilt Apptainer image of [dREG](https://github.com/Danko-Lab/dREG) — the
+reference R/CUDA implementation, frozen with the exact R 4.0.5 / CUDA 11.1 stack it
+was validated against. Download it, bind your data, call peaks.
 
-## Why this wraps the Docker image
+> ### Most people should use pydreg instead
+>
+> ```bash
+> uv tool install pydreg     # or: pip install pydreg
+> ```
+>
+> [**pydreg**](https://github.com/adamyhe/pydreg) is a Python reimplementation that
+> installs in seconds instead of needing a multi-GB CUDA container, runs
+> substantially faster, works on Apple Silicon, and agrees with this image to
+> **>0.999 Jaccard** on peak calls at default parameters.
+>
+> Use *this* image when you specifically need the R reference: reproducing published
+> dREG 20200515 results, or validating pydreg against R. For calling peaks on your
+> own data, use pydreg.
 
-dREG has a very old R/CUDA dependency stack. The upstream issue tracker has a few important install notes:
+## 1. Get the image and the model
 
-- [Issue #19](https://github.com/Danko-Lab/dREG/issues/19) asks for known working versions because current R packages may not work with dREG.
-- [PR #18](https://github.com/Danko-Lab/dREG/pull/18) updates `rDeps.R` to install `rphast` from `CshlSiepelLab/RPHAST`, since the CRAN package was pulled.
-- [Issue #20](https://github.com/Danko-Lab/dREG/issues/20) confirms the non-R runtime tools: `sort-bed` from BEDOPS, `tabix` from htslib, and `bedGraphToBigWig` from UCSC tools.
+Both live in the same Zenodo record:
+**[10.5281/zenodo.22225970](https://doi.org/10.5281/zenodo.22225970)**
 
-BioHPC's dREG page says their Docker image was built with Ubuntu 20.04, R 4.0.5, CUDA 11.1, the latest Rgtsvm at build time, and dREG 20200515. Docker Hub currently has one `latest` tag, pushed 2022-11-05, and the recipe pins its digest: `sha256:ebcc18ebb774fa198d36f7398eb92f50b33fb368aab1d67efebedb7aceb5ba16`. Using that image avoids rebuilding the fragile R package set from today's CRAN/GitHub state.
+```bash
+apptainer pull dreg.sif \
+  https://zenodo.org/records/22225970/files/dreg.sif
+curl -LO https://zenodo.org/records/22225970/files/asvm.gdm.6.6M.20170828.rdata
+```
 
-## Build
+That's 3.6 GB for the image and 570 MB for the model. Verify if you like:
 
-For an unprivileged build, use Apptainer's fakeroot mode but skip the container-internal `fakeroot` helper:
+```bash
+md5sum dreg.sif asvm.gdm.6.6M.20170828.rdata
+# dreg.sif                      2cb1ca16fb4c880b96faedaa90a094bd
+# asvm.gdm.6.6M.20170828.rdata  da81e96de4988021fc1e53d5f79b77ad
+```
+
+The model is deliberately *not* baked into the image — keep it beside your data and
+bind it in. It is also mirrored at
+<https://dreg.dnasequence.org/themes/dreg/assets/file/asvm.gdm.6.6M.20170828.rdata>.
+
+[10.5281/zenodo.10113378](https://doi.org/10.5281/zenodo.10113378) is the concept DOI
+for the record and always resolves to the newest version; cite that one.
+
+### Or build it yourself
+
+On a Linux x86_64 host (Apptainer doesn't run on macOS, and the base image is
+`amd64`):
 
 ```bash
 apptainer build --fakeroot --ignore-fakeroot-command dreg.sif dreg.def
 ```
 
-This avoids a known failure mode where Apptainer injects a host `faked` binary that requires newer glibc than the Ubuntu 20.04 base image provides.
+`--ignore-fakeroot-command` is not optional on most hosts: without it Apptainer
+injects a host `faked` binary that needs newer glibc than Ubuntu 20.04 provides, and
+`%post` fails with `GLIBC_2.33`/`GLIBC_2.34 not found`. `sudo apptainer build` and
+`singularity build` also work. Expect a multi-GB image and ~10 GB of scratch during
+the build. Details in [`docs/MAINTENANCE.md`](docs/MAINTENANCE.md).
 
-If you have admin privileges on the build host, a privileged build is also fine:
+## 2. Check the GPU works
+
+Do this once, before a long run. It trains a tiny SVM through Rgtsvm — the first
+thing in the stack that touches the GPU:
 
 ```bash
-sudo apptainer build dreg.sif dreg.def
+apptainer exec --nvccli --cleanenv dreg.sif dreg gpu_check
 ```
 
-If your cluster uses SingularityCE, the same definition should work:
+It should print an SVM summary and `OK: Rgtsvm created a CUDA context`. If it
+doesn't, go to [Troubleshooting](#troubleshooting) — do not skip ahead, since
+`apptainer test` passes even when the GPU path is completely dead.
+
+## 3. Call peaks
 
 ```bash
-singularity build dreg.sif dreg.def
+apptainer exec --nvccli --cleanenv --bind /path/to/data:/data dreg.sif \
+  dreg run_dREG /data/sample.pl.bw /data/sample.mn.bw /data/sample \
+                /data/asvm.gdm.6.6M.20170828.rdata 16 0
 ```
 
-### Fakeroot GLIBC Troubleshooting
+| Argument | Meaning |
+| --- | --- |
+| `sample.pl.bw` | plus-strand PRO-seq/GRO-seq bigWig |
+| `sample.mn.bw` | minus-strand bigWig |
+| `sample` | output *prefix*, not a filename |
+| `asvm...rdata` | the model file |
+| `16` | CPU cores (optional, default 1) |
+| `0` | GPU id (optional) |
 
-If the build fails during `%post` with messages like `/.singularity.d/libs/faked` and `GLIBC_2.33` or `GLIBC_2.34 not found`, rebuild with:
+Two things that catch people:
 
-```bash
-apptainer build --fakeroot --ignore-fakeroot-command dreg.sif dreg.def
+- **The GPU id is what enables GPU mode.** Omit it and dREG silently runs on CPU,
+  which is orders of magnitude slower. Pass `0` to use the default GPU; pass a
+  higher number to select a specific one if `nvidia-smi` shows GPU 0 is busy.
+- **bigWigs must be raw read counts, not normalized**, with the minus strand
+  negative. dREG validates this and aborts with *"bigWig files maybe not meet the
+  requirements"*; see upstream
+  [data preparation](https://github.com/Danko-Lab/dREG#data-preparation).
+
+(The upstream usage text mentions a 7th `GPU.threads` argument. The script never
+reads it — don't bother passing it.)
+
+## 4. Output files
+
+With prefix `sample`, you get these next to your data. Each `.bed.gz` is
+bgzip-compressed and tabix-indexed (`.bed.gz.tbi` alongside):
+
+| File | Contents |
+| --- | --- |
+| `sample.dREG.peak.full.bed.gz` | **the main result** — peaks with score and probability |
+| `sample.dREG.peak.prob.bed.gz` | peaks with probability only (chrom, start, end, prob) |
+| `sample.dREG.peak.score.bed.gz` | peaks with raw SVR score only |
+| `sample.dREG.infp.bed.gz` | scores at every informative position |
+| `sample.dREG.raw.peak.bed.gz` | raw peak calls before filtering |
+| `sample.dREG.peak.prob.bw` | probability as a bigWig, for genome browsers |
+| `sample.dREG.peak.score.bw` | score as a bigWig |
+| `sample.dREG.infp.bw` | informative-position scores as a bigWig |
+| `sample.chrom.info` | chromosome sizes derived from your bigWigs |
+
+Most downstream work uses `*.dREG.peak.full.bed.gz` or `*.dREG.peak.prob.bed.gz`.
+
+## Troubleshooting
+
+### `CUDA driver version is insufficient` — use `--nvccli`, not `--nv`
+
+If you launch with `--nv`, Rgtsvm aborts at its first CUDA call:
+
+```
+terminate called after throwing an instance of 'GTSVM::CUDA::Exception'
+  what():  svm.cpp:735: Failed to allocate space for found keys on host
+           (CUDA driver version is insufficient for CUDA runtime version)
 ```
 
-That error comes from Apptainer's fakeroot helper, not from dREG itself.
+The message is wrong — your driver is fine. `--nv` bind-mounts a fixed library list
+from Apptainer's `nvliblist.conf`, which is incomplete for recent drivers.
+`--nvccli` routes through `nvidia-container-cli` instead and works. **Always use
+`--nvccli`.**
 
-### Host R Library Troubleshooting
+It implies `--writable-tmpfs` and sets `NVIDIA_VISIBLE_DEVICES=all`; both are
+harmless. If your cluster has no `nvidia-container-cli`, `--nv` may still work on
+older drivers — confirm with `dreg gpu_check` before committing to a long run.
+`docker run --gpus all` on the same image also works.
 
-If R tries to load packages from your home directory, for example `/home/$USER/R/x86_64-pc-linux-gnu-library/4.0`, rebuild this image from the current `dreg.def`. The definition sets `R_LIBS_USER`, `R_PROFILE_USER`, and `R_ENVIRON_USER` so host R libraries and startup files do not override the container's pinned R stack.
+Confirmed broken with `--nv` on driver 580.167.08 / CUDA 13.0 with Pascal GPUs. The
+full diagnostic record, including what was ruled out, is in
+[`docs/MAINTENANCE.md`](docs/MAINTENANCE.md).
 
-For an already-built SIF, use this runtime workaround:
+### R loads packages from my home directory
+
+If R picks up `~/R/x86_64-pc-linux-gnu-library/4.0` and breaks the pinned stack,
+`--cleanenv` normally prevents it. To force the issue:
 
 ```bash
-apptainer exec --nv --cleanenv \
+apptainer exec --nvccli --cleanenv \
   --env R_LIBS_USER=/tmp \
   --env R_PROFILE_USER=/dev/null \
   --env R_ENVIRON_USER=/dev/null \
   --bind /path/to/data:/data dreg.sif \
-  dreg run_dREG /data/mysample_plus.bw /data/mysample_minus.bw /data/output_prefix /data/asvm.gdm.6.6M.20170828.rdata 16 0
+  dreg run_dREG /data/sample.pl.bw /data/sample.mn.bw /data/sample \
+                /data/asvm.gdm.6.6M.20170828.rdata 16 0
 ```
 
-## Test apptainer
+### Other notes
 
-Run the following commands to test the apptainer build.
+- Don't load a host CUDA toolkit module before launching. The image supplies the
+  CUDA runtime; only the driver should come from the host.
+- Peak calling is memory-hungry on top of the GPU. If it dies partway, retry with
+  fewer CPU cores before assuming a GPU problem.
 
-```bash
-apptainer test dreg.sif
-apptainer run dreg.sif --help
-```
+## Other commands
 
-On GPU-capable machines, also check CUDA visibility.
+Everything runs through one wrapper, `/usr/local/bin/dreg`:
 
-```bash
-apptainer exec --nv dreg.sif nvidia-smi
-```
+| Command | Purpose |
+| --- | --- |
+| `dreg run_dREG PL.bw MN.bw PREFIX MODEL.rdata [CORES] [GPU]` | peak calling (above) |
+| `dreg run_predict PL.bw MN.bw PREFIX MODEL.rdata [CORES] [GPU]` | legacy score prediction |
+| `dreg writeBed THRESHOLD FILE.bedGraph.gz` | peaks from legacy bedGraph output |
+| `dreg gpu_check` | prove the GPU works |
+| `dreg cuda_check` | print `nvidia-smi`, `LD_LIBRARY_PATH`, CUDA library resolution |
+| `dreg shell` | interactive bash in the container |
+| anything else | run directly in the container |
 
-If the host reports a new CUDA driver but dREG fails with `CUDA driver version is insufficient for CUDA runtime version`, check that the container is using Apptainer's bound driver libraries instead of CUDA stubs or host CUDA module libraries:
-
-```bash
-apptainer exec --nv --cleanenv dreg.sif \
-  dreg cuda_check
-```
-
-Run dREG on an idle GPU. The final argument to `run_dREG` is the GPU ID; if `nvidia-smi` shows GPU 0 is busy and GPU 1 is idle, use `1`.
-
-The `dreg` wrapper prepends `/.singularity.d/libs` to `LD_LIBRARY_PATH` when present. If the error persists, try Apptainer's NVIDIA container CLI integration if enabled on your cluster:
-
-```bash
-apptainer exec --nvccli --cleanenv --bind /path/to/data:/data dreg.sif \
-  dreg run_dREG /data/mysample_plus.bw /data/mysample_minus.bw /data/output_prefix /data/asvm.gdm.6.6M.20170828.rdata 16 1
-```
-
-Avoid loading a host CUDA toolkit module before launching the container unless your cluster requires it; dREG should use the CUDA runtime in the image and only the NVIDIA driver from the host.
-
-## Run
-
-Bind your working directory into the container. For GPU peak calling, pass `--nv` so Apptainer exposes NVIDIA libraries/devices. (THIS IS THE RECOMMENDED CURRENT WORKFLOW).
-
-```bash
-apptainer exec --nv --bind /path/to/data:/data dreg.sif \
-  dreg run_dREG /data/mysample_plus.bw /data/mysample_minus.bw /data/output_prefix /data/asvm.gdm.6.6M.20170828.rdata 16 0
-```
-
-For the legacy score-prediction workflow:
-
-```bash
-apptainer exec --bind /path/to/data:/data dreg.sif \
-  dreg run_predict /data/mysample_plus.bw /data/mysample_minus.bw /data/output_prefix /data/asvm.RData 2
-```
-
-To call peaks from legacy bedGraph output:
-
-```bash
-apptainer exec --bind /path/to/data:/data dreg.sif \
-  dreg writeBed 0.8 /data/output_prefix.bedGraph.gz
-```
-
-You can also run arbitrary commands inside the image:
+Anything unrecognised is executed as-is, so the image doubles as a frozen R 4.0.5
+environment:
 
 ```bash
 apptainer exec dreg.sif Rscript -e 'library(dREG); sessionInfo()'
 ```
 
-## Model File
+## What's inside
 
-The newer peak-calling workflow needs the 2017 dREG model. Upstream lists these sources:
+dREG 1.4.0, Rgtsvm 0.55, rphast 1.6.9, bigWig 0.2-9 on R 4.0.5 / CUDA 11.1 /
+Ubuntu 20.04, from the Cornell BioHPC image
+[`biohpc/dreg`](https://hub.docker.com/r/biohpc/dreg) pinned by digest. Exact
+versions and commits for all 84 R packages are in
+[`docs/reference-stack-manifest.md`](docs/reference-stack-manifest.md).
 
-- <https://dreg.dnasequence.org/themes/dreg/assets/file/asvm.gdm.6.6M.20170828.rdata>
-- <ftp://cbsuftp.tc.cornell.edu/danko/hub/dreg.models/asvm.gdm.6.6M.20170828.rdata>
-- <https://zenodo.org/records/10113379>
-
-Keep the model outside the SIF and bind it in with your data; this keeps the image small and avoids baking large mutable research data into the container.
+Building the image, why it wraps a prebuilt Docker image, and how it is archived are
+covered in [`docs/MAINTENANCE.md`](docs/MAINTENANCE.md).

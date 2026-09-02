@@ -39,7 +39,10 @@ Common commands:
   dreg run_dREG PLUS.bw MINUS.bw OUT_PREFIX MODEL.rdata [NTHREADS] [GPU]
   dreg run_predict PLUS.bw MINUS.bw OUT_PREFIX MODEL.rdata [NTHREADS] [GPU]
   dreg writeBed THRESHOLD OUT_PREFIX.bedGraph.gz
+  dreg gpu_check
   dreg cuda_check
+
+Run with --nvccli (not --nv); see README.md.
 
 Other commands are executed directly inside the container.
 HELP
@@ -63,6 +66,16 @@ case "$1" in
         shift
         exec bash /dREG/writeBed.bsh "$@"
         ;;
+    gpu_check)
+        # Real GPU smoke test: trains a tiny SVM through Rgtsvm, which is the
+        # first thing in the stack that creates a CUDA context. %test cannot
+        # catch GPU faults -- it only checks that packages import.
+        shift
+        exec Rscript -e 'library(Rgtsvm)
+x <- matrix(rnorm(200), 100, 2); y <- factor(rep(c(0, 1), 50))
+print(svm(x, y, type = "C-classification", kernel = "radial"))
+cat("\nOK: Rgtsvm created a CUDA context and trained on the GPU.\n")'
+        ;;
     cuda_check)
         shift
         nvidia-smi || true
@@ -84,6 +97,9 @@ EOF
     exec dreg "$@"
 
 %test
+    # NOTE: this validates loadability only. requireNamespace() does not create a
+    # CUDA context, so %test passes even when the GPU path is broken. Use
+    # `apptainer exec --nvccli --cleanenv dreg.sif dreg gpu_check` on a GPU host.
     test -f /dREG/run_dREG.bsh
     test -f /dREG/run_predict.bsh
     test -f /dREG/writeBed.bsh
@@ -101,8 +117,14 @@ EOF
       apptainer build --fakeroot --ignore-fakeroot-command dreg.sif dreg.def
 
     Run with a GPU:
-      apptainer exec --nv --bind /path/to/data:/data dreg.sif \
+      apptainer exec --nvccli --cleanenv --bind /path/to/data:/data dreg.sif \
         dreg run_dREG /data/plus.bw /data/minus.bw /data/out /data/model.rdata 16 0
+
+    Use --nvccli, NOT --nv. With --nv on a modern driver (confirmed on 580.167.08)
+    Rgtsvm aborts at its first CUDA call with a misleading "CUDA driver version is
+    insufficient" error. Verify the GPU path with:
+
+      apptainer exec --nvccli --cleanenv dreg.sif dreg gpu_check
 
     Run legacy score prediction:
       apptainer exec --bind /path/to/data:/data dreg.sif \
