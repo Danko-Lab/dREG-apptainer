@@ -39,8 +39,10 @@ vignettes/*.pdf
 # R Environment Variables
 .Renviron
 
-# pkgdown site
-docs/
+# pkgdown site -- rule removed: this repo is not an R package and has no
+# pkgdown site, but it does keep hand-written docs/ (see
+# docs/reference-stack-manifest.md). Git will not descend into an excluded
+# directory, so a negation pattern would not work here.
 
 # translation temp files
 po/*~
