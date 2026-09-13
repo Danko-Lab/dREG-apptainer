@@ -4,6 +4,7 @@ A prebuilt Apptainer image of [dREG](https://github.com/Danko-Lab/dREG) — the
 reference R/CUDA implementation, frozen with the exact R 4.0.5 / CUDA 11.1 stack it
 was validated against. Download it, bind your data, call peaks.
 
+> [!Important]
 > ### Most people should use pydreg instead
 >
 > ```bash
